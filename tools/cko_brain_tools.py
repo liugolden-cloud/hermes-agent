@@ -126,6 +126,9 @@ def git_push(
 
     full_path = _get_brain_root() / repo_path
 
+    committed = False
+    changed_files: list[str] = []
+
     if message:
         _run_git(["git", "add", "."], cwd=str(full_path))
         commit_result = _run_git(
@@ -135,8 +138,37 @@ def git_push(
         if not commit_result["success"]:
             return json.dumps({
                 "success": False,
+                "committed": False,
                 "error": commit_result.get("stderr", commit_result.get("stdout", "Commit failed")),
             }, ensure_ascii=False)
+
+        # Get the list of files that were committed
+        staged_result = _run_git(
+            ["git", "diff", "--staged", "--name-only"],
+            cwd=str(full_path),
+        )
+        if staged_result["success"] and staged_result["stdout"]:
+            # Commit succeeded but staged is now empty — use the commit content
+            # Get files from the last commit instead
+            last_commit_result = _run_git(
+                ["git", "show", "--staged", "--name-only", "--pretty="],
+                cwd=str(full_path),
+            )
+            if last_commit_result["success"] and last_commit_result["stdout"]:
+                changed_files = [
+                    f for f in last_commit_result["stdout"].strip().splitlines() if f
+                ]
+            else:
+                # Fallback: git log for last commit files
+                log_result = _run_git(
+                    ["git", "log", "-1", "--name-only", "--pretty="],
+                    cwd=str(full_path),
+                )
+                if log_result["success"] and log_result["stdout"]:
+                    changed_files = [
+                        f for f in log_result["stdout"].strip().splitlines() if f
+                    ]
+        committed = True
 
     push_result = _run_git(["git", "push", remote, branch], cwd=str(full_path))
 
@@ -144,6 +176,8 @@ def git_push(
         return json.dumps({
             "success": True,
             "pushed": True,
+            "committed": committed,
+            "changed_files": changed_files,
             "stdout": push_result.get("stdout", ""),
         }, ensure_ascii=False)
 
@@ -151,14 +185,18 @@ def git_push(
     stderr = push_result.get("stderr", "")
     if "nothing to commit" in stderr.lower():
         return json.dumps({
-            "success": True,
+            "success": True,      # not an error — tree is clean
             "pushed": False,
+            "committed": False,   # nothing was committed this cycle
+            "changed_files": [],
             "message": "Nothing to push — working tree clean.",
         }, ensure_ascii=False)
     if "rejected" in stderr.lower() or "fetch first" in stderr.lower():
         return json.dumps({
             "success": False,
             "pushed": False,
+            "committed": committed,
+            "changed_files": changed_files,
             "error": "Push rejected — remote has changes. Run git_pull first.",
             "stderr": stderr,
         }, ensure_ascii=False)
@@ -166,6 +204,8 @@ def git_push(
     return json.dumps({
         "success": False,
         "pushed": False,
+        "committed": committed,
+        "changed_files": changed_files,
         "error": stderr or push_result.get("stdout", "Push failed"),
     }, ensure_ascii=False)
 
@@ -1225,22 +1265,40 @@ def _ls_embed(texts: list, model: str = "nomic-embed-text") -> list:
     return embeddings
 
 
-def build_search_index(notes_dir: Optional[str] = None, chunk_size: int = 500) -> str:
+def build_search_index(notes_dir: Optional[str] = None, chunk_size: int = 500, force: bool = False) -> str:
     """
     Scan notes in /Brain/, chunk each note, and build a TF-IDF index for local_search.
-    Call this after adding or modifying many notes. Results are cached in /.local_search/.
+
+    Incremental: if the manifest's stored index_hash matches the current brain hash,
+    skips the expensive Ollama embedding step and returns immediately.
+    Use force=True to rebuild from scratch.
 
     Args:
         notes_dir:   Directory to index. Defaults to BRAIN_ROOT.
         chunk_size: Max words per chunk (default 500). Short notes = 1 chunk.
+        force:      If True, ignore hash comparison and rebuild everything (default False).
 
     Returns:
-        JSON summary with notes_indexed, chunks, elapsed_s.
+        JSON summary with notes_indexed, chunks, elapsed_s, incremental (bool).
     """
     import time, re
     t0 = time.time()
     brain_root = os.environ.get("BRAIN_ROOT", "/root/.hermes/brain")
     notes_dir = notes_dir or brain_root
+
+    # --- Incremental check: compare stored hash vs current hash ---
+    manifest = _ls_load_manifest()
+    current_hash = _ls_brain_hash()
+
+    if not force and manifest.get("index_hash") == current_hash:
+        return json.dumps({
+            "success": True,
+            "notes_indexed": manifest.get("n_notes", 0),
+            "chunks": manifest.get("n_chunks", 0),
+            "elapsed_s": round(time.time() - t0, 2),
+            "incremental": True,
+            "message": f"Index unchanged (hash={current_hash}). Use force=True to rebuild.",
+        }, ensure_ascii=False)
 
     md_files = []
     for root, _, files in os.walk(notes_dir):
@@ -1509,21 +1567,66 @@ def merge_notes(
 
     # ---- Merge body ----
     if merge_type == "auto":
-        # Simple heuristic: check if key sentences are shared
-        existing_sents = set(re.sub(r'[^\w\s]', '', existing_body.lower()).split())
-        new_sents = set(re.sub(r'[^\w\s]', '', new_body.lower()).split())
-        overlap = len(existing_sents & new_sents)
-        total = len(existing_sents | new_sents)
-        jaccard = overlap / total if total > 0 else 0
+        # Sentence-level comparison (better than word-level Jaccard).
+        # Split on sentence boundaries; filter out boilerplate/header lines.
+        def _sentences(text: str) -> list[str]:
+            # Split on common sentence endings, then drop very short fragments
+            sents = re.split(r'[。！？\n]+|(?<=[.!?])\s+', text)
+            return [
+                s.strip().lower() for s in sents
+                if len(s.strip()) >= 10          # skip fragments < 10 chars
+                and s.strip() not in ("", "-")  # skip empty / dash-only
+                and not re.match(r'^[-*#]+', s.strip())  # skip list markers
+            ]
+
+        existing_sents = _sentences(existing_body)
+        new_sents = _sentences(new_body)
+
+        # Filter out merge-log lines from existing_body (they pollute overlap)
+        merge_log_pattern = re.compile(
+            r'## 合并记录|## 增量补充|## 归档记录|合并日期|来源\d|合并类型|---',
+            re.IGNORECASE
+        )
+        existing_sents_filtered = [
+            s for s in existing_sents if not merge_log_pattern.search(s)
+        ]
+
+        existing_set = set(existing_sents_filtered)
+        new_set = set(new_sents)
+
+        overlap = len(existing_set & new_set)
+        union = len(existing_set | new_set)
+
+        # Sentence-level Jaccard (primary signal)
+        sent_jaccard = overlap / union if union > 0 else 0.0
+
+        # Additional signal: is the new content almost entirely contained in existing?
+        # (new is a subset → superseded; existing is a subset of new → strong update)
+        new_coverage = overlap / len(new_set) if new_set else 0.0   # how much new is already in existing
+        existing_coverage = overlap / len(existing_set) if existing_set else 0.0  # how much existing is in new
 
         # Check for contradiction keywords
-        contradiction_indicators = ["but", "however", "actually", "instead", "contradicts", "相反", "不对"]
+        contradiction_indicators = [
+            "but", "however", "actually", "instead", "contradicts",
+            "相反", "不对", "mistake", "错误", "incorrect",
+        ]
         has_contradiction = any(ind in new_body.lower() for ind in contradiction_indicators)
 
-        if has_contradiction or jaccard < 0.3:
+        # Decision matrix:
+        # - new_coverage > 0.9 and new is small → superseded (new is just restating existing)
+        # - has_contradiction → discrepancy_logged (content conflict)
+        # - sent_jaccard < 0.3 → discrepancy_logged (largely different content)
+        # - sent_jaccard >= 0.3 but new_coverage < 0.5 → facts_merged (new info added)
+        # - sent_jaccard >= 0.3 and new_coverage >= 0.5 → superseded (new mostly repeats old)
+
+        if new_coverage > 0.9 and len(new_set) <= 3:
+            detected_type = "superseded"
+        elif has_contradiction or sent_jaccard < 0.3:
             detected_type = "discrepancy_logged"
+        elif sent_jaccard >= 0.3 and new_coverage >= 0.5:
+            detected_type = "superseded"   # new mostly repeats existing → replace
         else:
-            detected_type = "facts_merged"
+            detected_type = "facts_merged"  # new adds genuinely new content
     else:
         detected_type = merge_type
 
@@ -2151,6 +2254,20 @@ def _make_conflict_recommendation(
     return "LOW RISK: No immediate conflict detected. Safe to push."
 
 
+def _path_starts_with(file_path: str, prefix: str) -> bool:
+    """Check if file_path starts with prefix as a path segment (not substring).
+
+    'Agents/Mac_Clone/conf' does NOT start with 'Agents/Mac'
+    'Agents/Mac/conf'        DOES start with 'Agents/Mac'
+    'Agents/MacBook/conf'    DOES start with 'Agents/MacBook'
+    """
+    fp_parts = file_path.replace("\\", "/").strip("/").split("/")
+    prefix_parts = prefix.replace("\\", "/").strip("/").split("/")
+    if len(fp_parts) < len(prefix_parts):
+        return False
+    return all(a == b for a, b in zip(fp_parts, prefix_parts))
+
+
 def resolve_conflict(
     file_path: str,
     strategy: str = "auto",
@@ -2212,7 +2329,7 @@ def resolve_conflict(
         rules = _load_rules()
         applied_rule = None
         for pattern, strat in rules.items():
-            if pattern in file_path:
+            if _path_starts_with(file_path, pattern):
                 strategy = strat
                 applied_rule = pattern
                 break
@@ -2222,8 +2339,8 @@ def resolve_conflict(
             # environment_priority (platform-specific) > timestamp_priority (generic)
             # For platform-specific detection: check path patterns
             platform_specific_patterns = ("Agents/Win", "Agents/Mac", "Agents/Linux",
-                                          "Agents/Cloud", ".plist", ".reg", ".config")
-            is_platform_specific = any(pat in file_path for pat in platform_specific_patterns)
+                                         "Agents/Cloud", ".plist", ".reg", ".config")
+            is_platform_specific = any(_path_starts_with(file_path, pat) for pat in platform_specific_patterns)
 
             if is_platform_specific:
                 # environment_priority: platform-specific content wins automatically
@@ -2630,12 +2747,41 @@ def age_notes(
         effective_date = date_field or last_modified
         days_since = (today - effective_date).days
 
+        # Read persisted aging state from frontmatter
+        existing_status = fm.get("Status", "")
+        aging_note = fm.get("AgingNote", "")
+        warning_started: date | None = None
+        if aging_note and aging_note.startswith("WARNING since "):
+            try:
+                warning_started = date.fromisoformat(aging_note.replace("WARNING since ", ""))
+            except ValueError:
+                pass
+
+        days_in_warning = 0
+        if warning_started:
+            days_in_warning = (today - warning_started).days
+
         # Classify
         is_low_conf = confidence < 0.5
         is_orphan = not has_backlinks
 
-        if is_low_conf and is_orphan and days_since >= warning_threshold_days:
-            status = WARNING
+        if existing_status == "archived":
+            status = ARCHIVED
+        elif is_low_conf and is_orphan and days_since >= warning_threshold_days:
+            if warning_started is None:
+                # Newly entering WARNING — record start date
+                status = WARNING
+                warning_started = today
+            elif days_in_warning >= archive_threshold_days:
+                # Been in WARNING long enough → archive
+                status = ARCHIVED
+            else:
+                # Still in WARNING, accumulating
+                status = WARNING
+        elif warning_started is not None and not (is_low_conf and is_orphan):
+            # Had a warning started, but no longer qualifies — recover to ACTIVE
+            status = ACTIVE
+            warning_started = None
         else:
             status = ACTIVE
 
@@ -2652,13 +2798,23 @@ def age_notes(
 
         results_by_status[status].append(note_entry)
 
-    # --- Step 4: Apply archive action if not dry_run ---
+    # --- Step 4: Persist state changes if not dry_run ---
     archive_moves = []
     warning_updates = []
+    recovered_notes = []
 
     if not dry_run:
-        for note in results_by_status[WARNING]:
-            # Demote: add Status: stale to frontmatter
+        # Collect all notes with their final status (from results_by_status)
+        all_notes: list[tuple[str, dict]] = []
+        for status_key, notes in [
+            (ACTIVE, results_by_status[ACTIVE]),
+            (WARNING, results_by_status[WARNING]),
+            (ARCHIVED, results_by_status[ARCHIVED]),
+        ]:
+            for note in notes:
+                all_notes.append((status_key, note))
+
+        for target_status, note in all_notes:
             note_path = brain_root / note["file"]
             try:
                 with open(note_path, "r", encoding="utf-8") as f:
@@ -2668,41 +2824,74 @@ def age_notes(
                 if fm_match:
                     fm_text = fm_match.group(2)
                     body = content[fm_match.end():]
-                    # Add stale status
                     new_fm_lines = fm_text.rstrip('\n').split('\n')
-                    new_fm_lines.append(f"Status: stale")
-                    new_fm_lines.append(f"AgingNote: WARNING since {today.isoformat()}")
-                    new_content = fm_match.group(1) + '\n'.join(new_fm_lines) + fm_match.group(3) + body
+                    # Remove old aging keys before adding new ones
+                    new_fm_lines = [
+                        l for l in new_fm_lines
+                        if not l.startswith("Status:")
+                        and not l.startswith("AgingNote:")
+                    ]
                 else:
-                    new_content = (
-                        f"---\nStatus: stale\nAgingNote: WARNING since {today.isoformat()}\n---\n\n"
-                        + content
+                    new_fm_lines = []
+                    body = content
+
+                if target_status == ACTIVE:
+                    # Recovery: clear stale status if it was set before
+                    recovery_occurred = any(
+                        l for l in new_fm_lines
+                        if l.startswith("Status:") and "stale" in l
                     )
+                    if recovery_occurred:
+                        recovered_notes.append(note["file"])
 
-                with open(note_path, "w", encoding="utf-8") as f:
-                    f.write(new_content)
+                elif target_status == WARNING:
+                    # Demote/update WARNING: write or refresh aging state
+                    # Preserve the original warning start date if already set
+                    existing_aging = ""
+                    for l in fm_text.split('\n'):
+                        if l.startswith("AgingNote:") and l.startswith("WARNING since "):
+                            existing_aging = l
+                            break
+                    if existing_aging:
+                        new_fm_lines.append(existing_aging)
+                    else:
+                        new_fm_lines.append(f"AgingNote: WARNING since {today.isoformat()}")
+                    new_fm_lines.append("Status: stale")
+                    warning_updates.append(note["file"])
 
-                warning_updates.append(note["file"])
+                elif target_status == ARCHIVED:
+                    new_fm_lines.append(f"Status: archived")
+                    new_fm_lines.append(f"AgingNote: ARCHIVED on {today.isoformat()}")
+
+                if target_status in (ACTIVE, WARNING):
+                    # Rebuild frontmatter for ACTIVE (clear stale) and WARNING (refresh aging)
+                    if new_fm_lines:
+                        new_content = fm_match.group(1) + '\n'.join(new_fm_lines) + fm_match.group(3) + body
+                    else:
+                        new_content = body  # no frontmatter keys remain
+                    with open(note_path, "w", encoding="utf-8") as f:
+                        f.write(new_content)
+
+                elif target_status == ARCHIVED:
+                    # Move to archive directory
+                    archive_dir = brain_root / archive_base / (
+                        f"{today.isoformat()}-AGED_{note['file'].replace('/', '_')}"
+                    )
+                    archive_dir.mkdir(parents=True, exist_ok=True)
+                    import shutil
+                    archive_dest = archive_dir / note_path.name
+                    shutil.copy2(note_path, archive_dest)
+                    with open(archive_dest, "a", encoding="utf-8") as f:
+                        f.write(
+                            f"\n\n> **Aging归档**: {today.isoformat()} "
+                            f"| Confidence: {note['confidence']} "
+                            f"| Backlinks: {note['backlink_count']}\n"
+                        )
+                    note_path.unlink()
+                    archive_moves.append(str(archive_dir.relative_to(brain_root)))
+
             except Exception as e:
                 pass  # Skip files that can't be written
-
-        for note in results_by_status[ARCHIVED]:
-            # Archive: move to .Archive directory
-            note_path = brain_root / note["file"]
-            archive_dir = brain_root / archive_base / f"{today.isoformat()}-AGED_{note['file'].replace('/', '_')}"
-            try:
-                archive_dir.mkdir(parents=True, exist_ok=True)
-                import shutil
-                archive_dest = archive_dir / note_path.name
-                shutil.copy2(note_path, archive_dest)
-                # Write aging metadata
-                with open(archive_dest, "a", encoding="utf-8") as f:
-                    f.write(f"\n\n> **Aging归档**: {today.isoformat()} | Confidence: {note['confidence']} | Backlinks: {note['backlink_count']}\n")
-                # Remove original
-                note_path.unlink()
-                archive_moves.append(str(archive_dir.relative_to(brain_root)))
-            except Exception as e:
-                pass  # Skip files that can't be archived
 
     # --- Step 5: Build report ---
     total = sum(len(v) for v in results_by_status.values())
@@ -2726,7 +2915,8 @@ def age_notes(
         "actions_taken": {
             "demoted_to_stale": warning_updates,
             "archived_to": archive_moves,
-        } if not dry_run else {"demoted_to_stale": [], "archived_to": []},
+            "recovered_to_active": recovered_notes,
+        } if not dry_run else {"demoted_to_stale": [], "archived_to": [], "recovered_to_active": []},
     }
 
     return json.dumps(report, ensure_ascii=False, indent=2)
@@ -3188,10 +3378,9 @@ BUILD_SEARCH_INDEX_SCHEMA = {
     "name": "build_search_index",
     "description": (
         "Build / rebuild the TF-IDF search index for /Brain/. "
-        "Call this after adding or updating many notes. "
         "Results are cached in /.local_search/tfidf_index.json. "
-        "The index is auto-built on first local_search call if missing. "
-        "Use this to force a rebuild after bulk note changes."
+        "Automatically skips rebuild if index is up-to-date (hash comparison). "
+        "Use force=True to rebuild after bulk note changes."
     ),
     "parameters": {
         "type": "object",
@@ -3199,6 +3388,10 @@ BUILD_SEARCH_INDEX_SCHEMA = {
             "chunk_size": {
                 "type": "integer", "default": 500,
                 "description": "Max words per chunk (default 500). Short notes = 1 chunk. Larger = fewer chunks, faster search but less granular."
+            },
+            "force": {
+                "type": "boolean", "default": False,
+                "description": "If True, ignore the hash comparison and force a full rebuild including re-embedding all chunks with Ollama."
             },
         },
     },
@@ -3544,6 +3737,7 @@ registry.register(
     schema=BUILD_SEARCH_INDEX_SCHEMA,
     handler=lambda args, **kw: build_search_index(
         chunk_size=args.get("chunk_size", 500),
+        force=args.get("force", False),
     ),
     check_fn=check_cko_brain_requirements,
     emoji="🔍",
