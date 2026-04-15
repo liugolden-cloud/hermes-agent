@@ -117,11 +117,14 @@ export interface Translations {
     totalTokens: string;
     totalSessions: string;
     apiCalls: string;
+    cacheHitRate: string;
     dailyTokenUsage: string;
     dailyBreakdown: string;
     perModelBreakdown: string;
+    prompt: string;
     input: string;
     output: string;
+    cached: string;
     total: string;
     noUsageData: string;
     startSession: string;
