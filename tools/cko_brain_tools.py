@@ -6,8 +6,10 @@ for the Cloud-Keeping Agent's /Brain/ knowledge management.
 Tools:
   Git:       git_pull, git_push, git_commit
   File:      read_markdown, write_markdown, append_to_file
-  Search:    brain_search, find_similar, find_orphan_notes
+  Search:    brain_search, find_similar, find_orphan_notes, local_search, build_search_index
   Memory:    calibrate_confidence, merge_notes, age_notes
+  Arbiter:   detect_conflicts, resolve_conflict, query_arbitration_history, learn_rules_from_history
+  Feedback:  record_vote, recalibrate_from_feedback, feedback_summary
 """
 
 import json
@@ -717,6 +719,702 @@ def find_orphan_notes(
         "total_files_scanned": len(all_files_set),
         "total_orphans": len(orphans),
         "orphans": orphans,
+    }, ensure_ascii=False)
+
+
+# ────────────────────────── Local Search (TF-IDF) ────────────────────────────
+
+_STORE_DIR = None   # lazy init
+
+def _ls_get_store_dir():
+    global _STORE_DIR
+    if _STORE_DIR is None:
+        brain_root = os.environ.get("BRAIN_ROOT", "/root/.hermes/brain")
+        _STORE_DIR = os.path.join(brain_root, ".local_search")
+        os.makedirs(_STORE_DIR, exist_ok=True)
+    return _STORE_DIR
+
+
+def _ls_preprocess(text: str, expand_dict: bool = False) -> list:
+    import re
+    text = re.sub(r'^---[\s\S]*?---', '', text)
+    text = re.sub(r'\[\[([^\]|]+)(?:\|[^\]]+)?\]\]', r'\1', text)
+    text = re.sub(r'#[a-zA-Z0-9_-]+', '', text)
+    text = re.sub(r'```[\s\S]*?```', '', text)
+    text = re.sub(r'&[a-z]+;', ' ', text)
+    text = re.sub(r'[^\w\s\u4e00-\u9fff]', ' ', text)
+    text = text.lower()
+    tokens = []
+    for token in text.split():
+        if re.search(r'[\u4e00-\u9fff]', token):
+            clean = re.sub(r'[\s\d_]+', '', token)
+            for i in range(len(clean) - 1):
+                bigram = clean[i:i + 2]
+                if bigram not in _LS_STOPWORDS:
+                    tokens.append(bigram)
+            if expand_dict:
+                # Expand via cross-lingual dict (only the bigram itself, not sub-bigrams)
+                expanded = _LS_CROSS_LINGUAL.get(clean, [])
+                for ex in expanded:
+                    ex_clean = ex.lower()
+                    if ex_clean not in _LS_STOPWORDS and len(ex_clean) >= 2:
+                        tokens.append(ex_clean)
+        elif len(token) >= 2 and token not in _LS_STOPWORDS:
+            tokens.append(token)
+            if expand_dict:
+                expanded = _LS_CROSS_LINGUAL.get(token, [])
+                for ex in expanded:
+                    ex_clean = ex.lower()
+                    if ex_clean not in _LS_STOPWORDS and len(ex_clean) >= 2:
+                        tokens.append(ex_clean)
+    return tokens
+
+
+_LS_STOPWORDS = {
+    'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by',
+    'from', 'as', 'is', 'was', 'are', 'were', 'been', 'be', 'have', 'has', 'had', 'do', 'does',
+    'did', 'will', 'would', 'could', 'should', 'may', 'might', 'must', 'shall', 'can',
+    'this', 'that', 'these', 'those', 'i', 'you', 'he', 'she', 'it', 'we', 'they',
+    'what', 'which', 'who', 'when', 'where', 'why', 'how', 'not', 'no', 'yes', 'all', 'any',
+    'each', 'every', 'some', 'if', 'then', 'else', 'so', 'than', 'too', 'very', 'just', 'only',
+    'also', 'now', 'here', 'there', 'into', 'out', 'up', 'down', 'over', 'under', 'again', 'once',
+    'more', 'other', 'same', 'such', '的', '了', '在', '是', '我', '有', '和', '就', '不', '人',
+    '都', '一', '一个', '上', '也', '很', '到', '说', '要', '去', '你', '会', '着', '没有',
+    '看', '好', '自己', '这', '什么', '可以', '可能', '已经', '或者', '如果',
+}
+
+# ── Cross-lingual translation dict (CN ↔ EN technical terms) ──
+_LS_CROSS_LINGUAL = {
+    # OS / 操作系统
+    '注册表':        ['registry', 'regedit', 'reg', 'windows registry'],
+    'windows注册表': ['windows registry', 'registry', 'regedit', 'reg'],
+    'macos':         ['mac os', 'macos', '苹果系统', '苹果'],
+    '苹果':          ['macos', 'mac os', 'apple', '苹果电脑', 'macbook'],
+    'linux':         ['linux', 'linux系统', '发行版', 'ubuntu', 'debian'],
+    'windows':       ['windows', 'win系统', '视窗', 'win11', 'win10'],
+    'ubuntu':        ['ubuntu', 'linux发行版', 'debian系'],
+    '安卓':          ['android', '安卓系统', '安卓手机'],
+    'android':       ['android', '安卓', '安卓系统'],
+
+    # Development / 开发
+    '代码':          ['code', 'coding', '源代码', 'source code'],
+    '函数':          ['function', 'method', 'func', '函数'],
+    '变量':          ['variable', 'var', '变量'],
+    '数组':          ['array', 'list', '数组', '列表'],
+    '对象':          ['object', 'obj', '对象'],
+    '类':            ['class', 'oop', '类'],
+    '接口':          ['interface', '接口', 'api'],
+    'api':           ['api', 'application programming interface', '接口', '应用程序接口'],
+    'sdk':           ['sdk', 'software development kit', '开发包', '工具包'],
+    'ide':           ['ide', '集成开发环境', '编辑器', 'vscode', 'pycharm'],
+    '编辑器':        ['editor', 'ide', '编辑器', 'vscode', 'vim', 'nano'],
+    '编译器':        ['compiler', '编译', '编译工具'],
+    '调试':          ['debug', '调试', 'debugger', '断点'],
+    '调试器':        ['debugger', 'debug', '调试工具'],
+    '单元测试':      ['unit test', 'unittest', '测试', 'testing'],
+    '测试':          ['test', 'testing', '测试', '单元测试'],
+    '重构':          ['refactor', '重构', '代码重构'],
+    '算法':          ['algorithm', '算法', '排序', 'search'],
+    '数据结构':       ['data structure', '数据结构', 'tree', 'graph', '图'],
+    '版本控制':       ['version control', 'git', 'svn', '版本管理'],
+    'git':           ['git', '版本控制', 'github', 'git仓库'],
+    'github':        ['github', 'git仓库', 'git', '远程仓库'],
+    'docker':        ['docker', '容器', 'container', '镜像'],
+    '容器':          ['container', 'docker', '镜像', 'containerization'],
+    'kubernetes':    ['kubernetes', 'k8s', '容器编排', 'k8s'],
+    'k8s':           ['k8s', 'kubernetes', '容器编排', '容器集群'],
+    'ci':            ['ci', 'continuous integration', '持续集成', 'jenkins'],
+    'cd':            ['cd', 'continuous deployment', '持续部署', '部署流水线'],
+    '持续集成':       ['ci', 'continuous integration', 'jenkins', 'github actions'],
+    '持续部署':       ['cd', 'continuous deployment', '部署', '流水线'],
+
+    # Data / 数据
+    '数据库':        ['database', 'db', '数据库', 'sql', 'nosql'],
+    '数据库表':       ['database table', '表', 'table', '数据表'],
+    'sql':           ['sql', '数据库查询', '数据库', 'mysql', 'postgresql'],
+    'nosql':         ['nosql', '非关系数据库', 'mongodb', 'redis', '文档数据库'],
+    'mysql':         ['mysql', '数据库', '关系数据库', 'sql数据库'],
+    'mongodb':       ['mongodb', '文档数据库', 'nosql', '数据库'],
+    'redis':         ['redis', '缓存', '键值数据库', 'nosql', '内存数据库'],
+    '缓存':          ['cache', '缓存', 'redis', 'memcached'],
+    '索引':          ['index', '索引', 'database index', 'search index'],
+    '搜索引擎':       ['search engine', '搜索引擎', 'elasticsearch', '全文搜索'],
+    'elasticsearch': ['elasticsearch', 'es', '搜索引擎', '全文搜索'],
+    '爬虫':          ['crawler', 'spider', '爬虫', 'web scraping'],
+    '数据挖掘':       ['data mining', '数据挖掘', 'analytics', '数据分析'],
+    '数据分析':       ['data analysis', '数据分析', 'analytics', '数据挖掘'],
+    '机器学习':       ['machine learning', 'ml', '机器学习', '深度学习'],
+    '深度学习':       ['deep learning', 'dl', '深度学习', 'neural network', '神经网络'],
+    '神经网络':       ['neural network', '深度学习', 'deep learning', 'nn'],
+    '大模型':         ['llm', 'large language model', '大语言模型', '语言模型', 'gpt'],
+    'llm':           ['llm', 'large language model', '大语言模型', '语言模型', 'gpt', '大模型'],
+    'embedding':     ['embedding', '向量嵌入', '词向量', 'text embedding'],
+    '向量':          ['vector', 'embedding', '向量', '向量数据库'],
+    '向量数据库':     ['vector database', '向量数据库', 'pinecone', 'milvus', 'faiss'],
+    '知识库':        ['knowledge base', '知识库', 'knowledge graph', '知识图谱'],
+    '知识图谱':       ['knowledge graph', '知识图谱', '知识库', 'ontology'],
+    'rag':           ['rag', 'retrieval augmented generation', '检索增强生成', 'rag系统'],
+
+    # Config / 配置
+    '配置文件':       ['config file', 'configuration', '配置文件', 'ini', 'yaml', 'toml', 'json配置'],
+    '环境变量':       ['environment variable', 'env', '环境变量', '环境配置'],
+    '路径':          ['path', '路径', 'filepath', '文件路径', 'directory'],
+    '目录':          ['directory', 'folder', '目录', '文件夹', 'path'],
+    '文件夹':        ['folder', 'directory', '文件夹', '目录'],
+    '文件':          ['file', '文件', '文件管理'],
+    '日志':          ['log', '日志', 'logging', '日志文件'],
+    '日志文件':       ['log file', '日志', 'logging', '日志输出'],
+    '权限':          ['permission', '权限', 'authorization', 'access control'],
+    '端口':          ['port', '端口', '网络端口', 'socket'],
+    '代理':          ['proxy', '代理', '反向代理', 'reverse proxy', 'forward proxy'],
+    '反向代理':       ['reverse proxy', '反向代理', 'nginx', '代理服务器'],
+    'nginx':         ['nginx', '反向代理', 'web服务器', '代理服务器'],
+    'ssl':           ['ssl', 'tls', '证书', 'https', 'ssl证书', '安全证书'],
+    '证书':          ['certificate', 'ssl', 'tls', 'ssl证书', '安全证书'],
+    'https':         ['https', 'ssl', 'tls', '安全连接', '加密连接'],
+    '域名':          ['domain', '域名', 'dns', '域名解析'],
+    'dns':           ['dns', '域名解析', '域名系统', 'nameserver'],
+    '防火墙':        ['firewall', '防火墙', 'iptables', 'ufw', '安全组'],
+    '监控':          ['monitoring', '监控', 'metrics', '指标监控'],
+    '告警':          ['alert', 'alerting', '告警', '报警', 'notification'],
+    '备份':          ['backup', '备份', '数据备份', '灾难恢复'],
+    '恢复':          ['recovery', 'restore', '恢复', '数据恢复', '容灾'],
+
+    # Network / 网络
+    'ip地址':        ['ip address', 'ip', 'ip地址', 'ipv4', 'ipv6'],
+    'ip':            ['ip', 'ip地址', 'ipv4', 'ipv6', '网络协议'],
+    'mac地址':       ['mac address', 'mac', '物理地址', '网卡地址'],
+    '网关':          ['gateway', '网关', '路由器', 'router'],
+    '路由器':        ['router', '路由器', '网关', 'router'],
+    '子网掩码':       ['subnet mask', '子网掩码', 'netmask', '子网'],
+    'vpn':           ['vpn', '虚拟专用网络', '翻墙', '梯子'],
+    'http':          ['http', '超文本传输协议', '网络协议', 'https'],
+    'websocket':     ['websocket', 'ws', '长连接', '双向通信'],
+    'tcp':           ['tcp', '传输控制协议', '网络协议', 'udp'],
+    'udp':           ['udp', '用户数据报协议', '网络协议', 'tcp'],
+    '端口号':        ['port number', '端口号', '端口', '网络端口'],
+    '局域网':        ['lan', '局域网', 'local network', '内网'],
+    '广域网':        ['wan', '广域网', 'wide area network', '外网'],
+    '内网':          ['intranet', '内网', '局域网', '私有网络'],
+    '外网':          ['internet', '外网', '公网', '互联网'],
+    'api调用':       ['api call', 'api invocation', 'api调用', '接口调用'],
+    '网络请求':       ['network request', 'http request', '网络请求', 'api请求'],
+    '请求':          ['request', 'http request', '网络请求', '请求'],
+    '响应':          ['response', 'http response', '响应', '网络响应'],
+    'webhook':       ['webhook', '回调', 'web钩子', 'http回调'],
+
+    # Security / 安全
+    '安全':          ['security', '安全', '信息安全的', 'cybersecurity'],
+    '加密':          ['encryption', '加密', 'cryptography', '密码学'],
+    '解密':          ['decryption', '解密', '解密', 'decode'],
+    '密码':          ['password', '密码', 'credential', '凭据'],
+    '认证':          ['authentication', 'auth', '认证', '身份验证'],
+    '授权':          ['authorization', 'authorization', '授权', '权限管理'],
+    'token':         ['token', '令牌', 'access token', 'access token', '刷新令牌'],
+    'oauth':         ['oauth', 'oauth2', '开放授权', '第三方认证'],
+    'jwt':           ['jwt', 'json web token', '令牌', 'token'],
+    'cors':          ['cors', '跨域', 'cross-origin', '跨域资源共享'],
+    '注入':          ['injection', '注入', 'sql injection', '代码注入'],
+    'xss':           ['xss', '跨站脚本', 'cross-site scripting', '前端安全'],
+    'csrf':          ['csrf', '跨站请求伪造', 'cross-site request forgery', '安全'],
+    '渗透测试':       ['penetration test', 'pentest', '渗透测试', '安全测试'],
+    '漏洞扫描':       ['vulnerability scan', '漏洞扫描', 'security scan'],
+
+    # Cloud / 云
+    '云服务器':       ['cloud server', '云主机', 'ecs', '云服务实例'],
+    'ecs':           ['ecs', 'elastic compute service', '云服务器', '云主机'],
+    '云存储':         ['cloud storage', '对象存储', 'oss', 's3', '云存储'],
+    'oss':           ['oss', 'object storage service', '对象存储', '云存储'],
+    's3':            ['s3', 'simple storage service', '对象存储', 'aws s3'],
+    'cdn':           ['cdn', '内容分发网络', '内容分发', '加速'],
+    '负载均衡':       ['load balancer', 'lb', '负载均衡', '负载均衡器'],
+    '自动扩缩容':     ['autoscaling', 'auto scale', '自动扩缩容', '弹性伸缩'],
+    '弹性伸缩':       ['elasticity', 'autoscaling', '自动扩缩容', '弹性'],
+
+    # Tools / 工具
+    '命令行':        ['command line', 'cli', '命令行', '终端', 'terminal'],
+    '终端':          ['terminal', '终端', '命令行', 'cli', 'shell'],
+    'shell':         ['shell', 'bash', 'zsh', '终端', '命令行'],
+    'bash':          ['bash', 'shell脚本', 'bash脚本', 'shell'],
+    'powershell':    ['powershell', 'ps', 'windows powershell', '脚本'],
+    'vim':           ['vim', 'vi', '编辑器', '终端编辑器', '文本编辑器'],
+    'gitbash':       ['git bash', 'bash', 'windows git', '命令行'],
+    'tmux':          ['tmux', '终端多路复用', '会话管理', '分屏'],
+    '正则表达式':     ['regex', 'regular expression', '正则', '正则表达式'],
+    '正则':          ['regex', '正则表达式', 'regular expression', 'pattern'],
+
+    # Package / 包管理
+    'pip':           ['pip', 'python包管理器', 'python pip', '包管理'],
+    'npm':           ['npm', 'node包管理器', 'node package manager', '包管理'],
+    'yarn':          ['yarn', 'npm替代', 'node包管理', '包管理'],
+    'conda':         ['conda', '环境管理器', 'python环境', 'conda环境'],
+    'venv':          ['venv', 'virtualenv', 'python虚拟环境', '虚拟环境'],
+    '依赖':          ['dependency', 'dependencies', '依赖', '包依赖'],
+    '包':            ['package', '包', 'npm包', 'pip包', '依赖包'],
+    '镜像源':        ['mirror', '源', '镜像', 'pip镜像', 'npm镜像', '仓库'],
+    '仓库':          ['repository', 'repo', '仓库', '代码仓库', 'registry'],
+
+    # AI/LLM specific
+    '提示词':        ['prompt', '提示词', 'prompt engineering', '提示词工程'],
+    '提示词工程':     ['prompt engineering', '提示词工程', 'prompt', '提示词优化'],
+    '思维链':        ['chain of thought', 'cot', '思维链', '推理链'],
+    'few-shot':      ['few-shot', 'few shot', '少样本', '小样本学习'],
+    'zero-shot':     ['zero-shot', 'zero shot', '零样本', '零样本学习'],
+    '微调':          ['fine-tuning', '微调', '模型微调', 'fine-tune'],
+    'fine-tuning':   ['fine-tuning', '微调', '模型微调', 'fine-tune'],
+    '训练':          ['training', '训练', '模型训练', 'train'],
+    '推理':          ['inference', '推理', '模型推理', 'infer'],
+    '模型蒸馏':       ['distillation', '模型蒸馏', '知识蒸馏', 'distill'],
+    '量化':          ['quantization', '量化', '模型量化', 'quantize'],
+    '剪枝':          ['pruning', '剪枝', '模型剪枝', 'network pruning'],
+    'loss函数':      ['loss function', 'loss', '损失函数', 'objective function'],
+    '梯度下降':       ['gradient descent', '梯度下降', '优化算法', 'optimizer'],
+    '优化器':         ['optimizer', '优化器', 'adam', 'sgd', '梯度下降'],
+    '超参数':        ['hyperparameter', '超参数', 'hyper params'],
+    'epoch':         ['epoch', '轮次', '训练轮次', 'iteration'],
+    'batch':         ['batch', '批次', 'batch size', '批量'],
+    'token计费':     ['token billing', 'token计算', 'token计费', '用量计费'],
+    '上下文长度':     ['context length', '上下文长度', 'max tokens', 'context window'],
+    'context窗口':   ['context window', '上下文窗口', '上下文长度', 'context length'],
+
+    # Brain / CKO
+    '第二大脑':       ['second brain', '第二大脑', 'pkm', 'personal knowledge management'],
+    '知识管理':       ['knowledge management', '知识管理', 'pkm', '知识库'],
+    '笔记':          ['note', '笔记', 'notes', 'knowledge note'],
+    '笔记系统':       ['note-taking system', '笔记系统', 'obsidian', '双链笔记'],
+    '双链':          ['bidirectional link', '双链', 'obsidian', 'link'],
+    'obsidian':      ['obsidian', '双链笔记', '笔记软件', 'md编辑器'],
+    'zettelkasten':  ['zettelkasten', '卡片盒', '笔记法', '知识管理'],
+    '定期回顾':       ['spaced repetition', '定期回顾', '记忆曲线', '艾宾浩斯'],
+    '记忆曲线':       ['spaced repetition', '记忆曲线', '艾宾浩斯遗忘曲线', '定期回顾'],
+    '记忆宫殿':       ['memory palace', '记忆宫殿', ' loci method', '记忆法'],
+    '增量学习':       ['incremental learning', '增量学习', '持续学习', '在线学习'],
+    '知识蒸馏':       ['knowledge distillation', '知识蒸馏', '模型蒸馏', 'distillation'],
+    '跨平台':        ['cross-platform', '跨平台', '跨系统', '多平台'],
+    '多设备同步':     ['multi-device sync', '多设备同步', '设备同步', '跨设备'],
+    '代理':          ['proxy', '代理', '梯子', 'vpn', '网络代理'],
+    'tailscale':     ['tailscale', '组网', '异地组网', 'mesh vpn', '零信任组网'],
+    '内网穿透':       ['内网穿透', 'nat traversal', 'frp', 'ngrok', '穿透'],
+    'frp':           ['frp', '内网穿透', 'nat traversal', '反向代理穿透'],
+    'ngrok':         ['ngrok', '内网穿透', '隧道', '公网穿透'],
+
+    # Memory / 记忆
+    '上下文':        ['context', '上下文', 'context window', '上下文窗口'],
+    '工作记忆':       ['working memory', '工作记忆', 'short-term memory', '短期记忆'],
+    '长期记忆':       ['long-term memory', '长期记忆', 'persistent memory', '持久记忆'],
+    '情景记忆':       ['episodic memory', '情景记忆', '记忆', '个人经历记忆'],
+    '语义记忆':       ['semantic memory', '语义记忆', '知识记忆', '概念记忆'],
+    '遗忘':          ['forgetting', '遗忘', '记忆衰退', 'aging'],
+    '遗忘曲线':       ['forgetting curve', '遗忘曲线', '艾宾浩斯', '记忆衰退'],
+    '元认知':        ['metacognition', '元认知', '认知监控', '自我认知'],
+    '认知偏差':       ['cognitive bias', '认知偏差', '偏见', '思维偏差'],
+    '确认偏差':       ['confirmation bias', '确认偏差', '认知偏差', '偏见'],
+    '锚定效应':       ['anchoring bias', '锚定效应', '认知偏差', '心理锚定'],
+    '可获得性启发':   ['availability heuristic', '可获得性启发', '认知启发', '判断偏差'],
+    '后见之明偏差':   ['hindsight bias', '后见之明偏差', '认知偏差', '马后炮'],
+    '过度自信效应':   ['overconfidence effect', '过度自信', '认知偏差', '自信偏差'],
+    '计划谬误':       ['planning fallacy', '计划谬误', '低估耗时', '认知偏差'],
+    '框架效应':       ['framing effect', '框架效应', '认知偏差', '表述偏差'],
+    '损失规避':       ['loss aversion', '损失规避', '认知偏差', '损失厌恶'],
+    '沉没成本谬误':    ['sunk cost fallacy', '沉没成本', '认知偏差', '成本谬误'],
+
+    # Thinking / 思维
+    '批判性思维':     ['critical thinking', '批判性思维', '分析思维', '逻辑思维'],
+    '系统性思维':     ['systems thinking', '系统性思维', '系统思考', '整体思维'],
+    '设计思维':       ['design thinking', '设计思维', '以人为本设计', '创新思维'],
+    '第一性原理':     ['first principles', '第一性原理', '物理思维', '根本原理'],
+    '类比思维':       ['analogical thinking', '类比思维', '类比推理', '比喻思维'],
+    '逆向思维':       ['reverse thinking', '逆向思维', '反推法', '倒推法'],
+    '发散思维':       ['divergent thinking', '发散思维', '头脑风暴', '创意思维'],
+    '收敛思维':       ['convergent thinking', '收敛思维', '聚合思维', '逻辑收敛'],
+    '水平思维':       ['lateral thinking', '水平思维', '横向思维', '创新思维'],
+    '垂直思维':       ['vertical thinking', '垂直思维', '纵向思维', '深度思考'],
+    '元认知监控':     ['metacognitive monitoring', '元认知监控', '自我监控', '思维监控'],
+    '思维模型':       ['mental model', '思维模型', '心智模型', '认知框架'],
+    '认知框架':       ['cognitive framework', '认知框架', '心智模型', '思维框架'],
+    '心理模型':       ['mental model', '心理模型', '心智模型', '思维模型'],
+
+    # Productivity / 效率
+    '番茄工作法':     ['pomodoro technique', '番茄工作法', '时间管理', '专注'],
+    '番茄钟':        ['pomodoro', '番茄钟', '专注计时', '时间块'],
+    '时间管理':       ['time management', '时间管理', '效率', 'gtd', 'getting things done'],
+    'gtd':           ['gtd', 'getting things done', '时间管理', '任务管理'],
+    '优先级':        ['priority', '优先级', '重要紧急', '任务优先级'],
+    '重要紧急':       ['eisenhower matrix', '重要紧急', '优先级', '四象限'],
+    '四象限':        ['eisenhower matrix', '四象限', '重要紧急', '优先级矩阵'],
+    '深度工作':       ['deep work', '深度工作', '专注工作', '心流'],
+    '心流':          ['flow state', '心流', '心流状态', '深度专注'],
+    '多任务处理':     ['multitasking', '多任务处理', '任务切换', '并行处理'],
+    '委托':          ['delegation', '委托', '任务委托', '授权'],
+    '自动化':         ['automation', '自动化', '工作流自动化', '流程自动化'],
+    '模板':          ['template', '模板', '文档模板', '工作模板'],
+    'checklist':     ['checklist', '清单', '检查清单', '任务清单'],
+    'sop':           ['sop', 'standard operating procedure', '标准作业程序', '流程文档'],
+    '流程':          ['process', '流程', '工作流', 'workflow', '步骤'],
+    '工作流':        ['workflow', '工作流', '流程', 'pipeline', '流水线'],
+    '流水线':        ['pipeline', '流水线', '工作流', 'ci cd pipeline', '流程'],
+
+    # Communication / 沟通
+    '异步沟通':       ['async communication', '异步沟通', '非同步', '消息异步'],
+    '同步沟通':       ['sync communication', '同步沟通', '实时沟通', '会议'],
+    '结构化沟通':     ['structured communication', '结构化沟通', '沟通框架', '金字塔原理'],
+    '金字塔原理':     ['pyramid principle', '金字塔原理', '结构化沟通', '结论先行'],
+    '电梯演讲':       ['elevator pitch', '电梯演讲', '电梯法则', '简报'],
+    '反馈':          ['feedback', '反馈', '意见反馈', '回复'],
+    '主动反馈':       ['proactive feedback', '主动反馈', '反馈', '定期反馈'],
+    '绩效评估':       ['performance review', '绩效评估', '绩效面谈', '考核'],
+    '1on1':          ['1-on-1', '一对一会议', 'one on one', '绩效沟通'],
+    '周报':          ['weekly report', '周报', '周总结', '工作周报'],
+    '月报':          ['monthly report', '月报', '月总结', '工作月报'],
+    '站会':          ['standup', '站会', '每日站会', 'scrum standup'],
+    '复盘':          ['retrospective', '复盘', '项目复盘', '总结反思'],
+    '项目复盘':       ['project retrospective', '项目复盘', '复盘', '事后分析'],
+    '知识分享':       ['knowledge sharing', '知识分享', '技术分享', '内部分享'],
+    '技术分享':       ['tech talk', '技术分享', '知识分享', '技术演讲'],
+    '文档':          ['documentation', '文档', 'docs', '技术文档'],
+    '技术文档':       ['technical documentation', '技术文档', '文档', '开发文档'],
+    'api文档':        ['api documentation', 'api文档', '接口文档', 'api docs'],
+    'readme':        ['readme', 'readme文档', '项目说明', '项目文档'],
+    'changelog':     ['changelog', '更新日志', '变更日志', '版本记录'],
+    '协议':          ['protocol', '协议', '通信协议', '网络协议', '规则'],
+    '规范':          ['specification', 'spec', '规范', '约定', '规格'],
+    '标准':          ['standard', '标准', '规范', '规格', 'standard'],
+    '约定':          ['convention', '约定', '规范', '惯例', 'convention'],
+    '命名规范':       ['naming convention', '命名规范', '命名约定', '变量命名'],
+    '代码审查':       ['code review', '代码审查', 'cr', 'review', '代码评审'],
+    'pair编程':      ['pair programming', 'pair编程', '结对编程', '协作编程'],
+    '结对编程':       ['pair programming', '结对编程', 'pair编程', '协作编程'],
+    'mob编程':       ['mob programming', 'mob编程', '群体编程', '团队协作'],
+    '技术债务':       ['technical debt', '技术债务', '债务', '代码债务'],
+    '代码质量':       ['code quality', '代码质量', '质量', '代码整洁度'],
+    '可维护性':       ['maintainability', '可维护性', '维护性', '代码可维护性'],
+    '可读性':        ['readability', '可读性', '代码可读性', '阅读性'],
+    '可扩展性':       ['scalability', '可扩展性', '扩展性', '系统可扩展性'],
+    '鲁棒性':        ['robustness', '鲁棒性', '健壮性', '容错性'],
+    '容错':          ['fault tolerance', '容错', '容错性', '高可用'],
+    '高可用':        ['high availability', 'ha', '高可用', '可用性', 'ha系统'],
+    '灾备':          ['disaster recovery', '灾备', '容灾', '业务连续性'],
+    '业务连续性':     ['business continuity', '业务连续性', 'bc', '灾备', '容灾'],
+    'sla':           ['sla', 'service level agreement', '服务级别协议', '服务水平'],
+    '监控':          ['monitoring', '监控', '系统监控', '应用监控'],
+    '可观测性':       ['observability', '可观测性', '监控', 'metrics', 'traces', 'logs'],
+    'metrics':       ['metrics', '指标', '度量', '可观测性', '性能指标'],
+    'tracing':       ['tracing', '链路追踪', '分布式追踪', 'trace'],
+    '日志':          ['logging', '日志', '日志记录', 'log'],
+    '告警':          ['alerting', '告警', '报警', 'alert', 'notification'],
+    'incident':      ['incident', '事故', '故障', 'incident管理', '事件'],
+    'incident管理':   ['incident management', 'incident管理', '事故管理', '故障响应'],
+    '值班':          ['on-call', '值班', 'oncall', '运维值班'],
+    '变更管理':       ['change management', '变更管理', 'change control', '变更流程'],
+    '发布':          ['release', '发布', '上线', 'deployment', '部署'],
+    '灰度发布':       ['canary release', '灰度发布', '金丝雀发布', '渐进式发布'],
+    '回滚':          ['rollback', '回滚', '版本回退', '回退'],
+    '热更新':        ['hot reload', '热更新', '热部署', '在线更新'],
+    '冷更新':        ['cold update', '冷更新', '离线更新', '重启更新'],
+    '蓝绿部署':       ['blue-green deployment', '蓝绿部署', '部署策略', '零停机部署'],
+    'ab测试':        ['a/b testing', 'ab测试', 'ab test', '对比测试', '分桶测试'],
+    '特性开关':       ['feature flag', '特性开关', 'feature toggle', '功能开关'],
+    '金丝雀':        ['canary', '金丝雀', '灰度', 'canary release', '金丝雀发布'],
+    '冒烟测试':       ['smoke test', '冒烟测试', '冒烟', '快速测试'],
+    '回归测试':       ['regression test', '回归测试', '回归', '功能回归'],
+    '集成测试':       ['integration test', '集成测试', '集成', '系统集成测试'],
+    '端到端测试':     ['e2e test', 'end-to-end test', '端到端测试', 'e2e'],
+    '压测':          ['load test', '压测', '压力测试', '性能测试', 'stress test'],
+    '性能测试':       ['performance test', '性能测试', '压测', '基准测试', 'benchmark'],
+    '基准测试':       ['benchmark', '基准测试', '性能基准', '性能测试'],
+    '渗透测试':       ['penetration test', '渗透测试', 'pentest', '安全测试'],
+    '混沌工程':       ['chaos engineering', '混沌工程', '故障注入', '混沌测试'],
+}
+
+
+def _ls_chunk_text(text: str, size: int = 500) -> list:
+    import re
+    text = re.sub(r'^---[\s\S]*?---', '', text)
+    lines = text.split('\n')
+    chunks, current, wc = [], [], 0
+    for line in lines:
+        w = len(line.split())
+        if wc + w > size and current:
+            chunks.append('\n'.join(current))
+            current, wc = [], 0
+        current.append(line)
+        wc += w
+    if current:
+        chunks.append('\n'.join(current))
+    return [c.strip() for c in chunks if c.strip()]
+
+
+def _ls_brain_hash() -> str:
+    import hashlib
+    brain_root = os.environ.get("BRAIN_ROOT", "/root/.hermes/brain")
+    mtimes = []
+    for root, _, files in os.walk(brain_root):
+        if any(x in root for x in [".local_search", ".git", ".Archive"]):
+            continue
+        for fn in sorted(files):
+            if fn.endswith(".md"):
+                fp = os.path.join(root, fn)
+                mtime = int(os.path.getmtime(fp))
+                mtimes.append(str(mtime))
+    return hashlib.sha256("".join(mtimes).encode()).hexdigest()[:12]
+
+
+def _ls_load_manifest():
+    manifest_path = os.path.join(_ls_get_store_dir(), "manifest.json")
+    if os.path.exists(manifest_path):
+        with open(manifest_path) as f:
+            return json.load(f)
+    return {"version": 1, "notes": [], "index_hash": ""}
+
+
+def _ls_save_manifest(m):
+    manifest_path = os.path.join(_ls_get_store_dir(), "manifest.json")
+    with open(manifest_path, "w") as f:
+        json.dump(m, f, ensure_ascii=False, indent=2)
+
+
+def _ls_tfidf_vector(terms: list, doc_freqs: dict, n_docs: int) -> dict:
+    from collections import Counter
+    import math
+    tf = Counter(terms)
+    max_tf = max(tf.values()) if tf else 1
+    vec = {}
+    for term, count in tf.items():
+        tf_norm = count / max_tf
+        idf = math.log((n_docs + 1) / (doc_freqs.get(term, 0) + 1)) + 1
+        vec[term] = tf_norm * idf
+    return vec
+
+
+def _ls_cosine(vec_a: dict, vec_b: dict) -> float:
+    import math
+    common = set(vec_a) & set(vec_b)
+    if not common:
+        return 0.0
+    dot = sum(vec_a[t] * vec_b[t] for t in common)
+    norm = math.sqrt(sum(v * v for v in vec_a.values())) * math.sqrt(sum(v * v for v in vec_b.values()))
+    return dot / (norm + 1e-10)
+
+
+def _ls_cosine_vec(a: list, b: list) -> float:
+    """Cosine similarity between two raw float vectors."""
+    import math
+    dot = sum(x * y for x, y in zip(a, b))
+    norm_a = math.sqrt(sum(x * x for x in a))
+    norm_b = math.sqrt(sum(y * y for y in b))
+    return dot / (norm_a * norm_b + 1e-10)
+
+
+def _ls_embed(texts: list, model: str = "nomic-embed-text") -> list:
+    """Get Ollama embeddings for a list of texts. Returns list of float vectors."""
+    import urllib.request, json
+    embeddings = []
+    for text in texts:
+        payload = json.dumps({"model": model, "prompt": text[:8192]}).encode()
+        req = urllib.request.Request(
+            "http://localhost:11434/api/embeddings",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                data = json.loads(resp.read())
+                embeddings.append(data.get("embedding", []))
+        except Exception:
+            embeddings.append([])
+    return embeddings
+
+
+def build_search_index(notes_dir: Optional[str] = None, chunk_size: int = 500) -> str:
+    """
+    Scan notes in /Brain/, chunk each note, and build a TF-IDF index for local_search.
+    Call this after adding or modifying many notes. Results are cached in /.local_search/.
+
+    Args:
+        notes_dir:   Directory to index. Defaults to BRAIN_ROOT.
+        chunk_size: Max words per chunk (default 500). Short notes = 1 chunk.
+
+    Returns:
+        JSON summary with notes_indexed, chunks, elapsed_s.
+    """
+    import time, re
+    t0 = time.time()
+    brain_root = os.environ.get("BRAIN_ROOT", "/root/.hermes/brain")
+    notes_dir = notes_dir or brain_root
+
+    md_files = []
+    for root, _, files in os.walk(notes_dir):
+        if any(x in root for x in [".local_search", ".git", ".Archive"]):
+            continue
+        for fn in sorted(files):
+            if fn.endswith(".md"):
+                md_files.append(os.path.join(root, fn))
+
+    doc_freqs = {}
+    doc_data = []
+    for fp in md_files:
+        rel = os.path.relpath(fp, brain_root)
+        with open(fp) as f:
+            content = f.read()
+        title = ""
+        m = re.match(r'^#\s+(.+)$', content, re.MULTILINE)
+        if m:
+            title = m.group(1).strip()
+        chunks = _ls_chunk_text(content, chunk_size)
+        for i, chunk in enumerate(chunks):
+            chunk_id = f"{rel}.{i}" if len(chunks) > 1 else rel
+            terms = _ls_preprocess(chunk)
+            for t in set(terms):
+                doc_freqs[t] = doc_freqs.get(t, 0) + 1
+            doc_data.append({"path": chunk_id, "title": title or rel, "chunk_text": chunk, "terms": terms})
+
+    n_docs = len(doc_data)
+    doc_vectors = [_ls_tfidf_vector(d["terms"], doc_freqs, n_docs) for d in doc_data]
+
+    # Ollama embedding vectors
+    emb_path = os.path.join(_ls_get_store_dir(), "ollama_vectors.json")
+    try:
+        chunk_texts = [d["chunk_text"] for d in doc_data]
+        vecs = _ls_embed(chunk_texts)
+        # Save as list of lists (raw float vectors)
+        with open(emb_path, "w") as f:
+            json.dump(vecs, f)
+        n_embedded = sum(1 for v in vecs if v)
+        print(f"[local_search] Ollama embedded {n_embedded}/{len(vecs)} chunks")
+    except Exception as ex:
+        print(f"[local_search] Ollama embedding skipped: {ex}")
+        with open(emb_path, "w") as f:
+            json.dump([[] for _ in doc_data], f)
+
+    # Save index
+    idx_path = os.path.join(_ls_get_store_dir(), "tfidf_index.json")
+    with open(idx_path, "w") as f:
+        json.dump({"doc_freqs": doc_freqs, "doc_vectors": doc_vectors,
+                    "doc_data": [{"path": d["path"], "title": d["title"], "chunk_text": d["chunk_text"]}
+                                 for d in doc_data]}, f, ensure_ascii=False)
+
+    # Save manifest
+    manifest = _ls_load_manifest()
+    manifest["index_hash"] = _ls_brain_hash()
+    manifest["notes"] = [{"path": d["path"], "title": d["title"]} for d in doc_data]
+    manifest["n_chunks"] = len(doc_data)
+    manifest["n_notes"] = len(md_files)
+    manifest["built_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+    _ls_save_manifest(manifest)
+
+    return json.dumps({
+        "success": True,
+        "notes_indexed": len(md_files),
+        "chunks": len(doc_data),
+        "elapsed_s": round(time.time() - t0, 2),
+    }, ensure_ascii=False)
+
+
+def local_search(query: str, top_k: int = 5, mode: str = "hybrid") -> str:
+    """
+    Hybrid search over /Brain/ notes — TF-IDF + Ollama vector fusion.
+
+    Pipeline (hybrid mode):
+      1. CJK-aware tokenization with cross-lingual expansion
+      2. TF-IDF cosine similarity  (weight: 0.6)
+      3. Ollama nomic-embed-text cosine similarity (weight: 0.4)
+      4. Keyword boost: exact term matches add +0.05/term
+      5. Final score = 0.6*tfidf_score + 0.4*emb_score + keyword_boost
+
+    Vector layer requires Ollama running with 'nomic-embed-text' pulled.
+    Falls back to TF-IDF only if Ollama is unavailable.
+
+    Args:
+        query:    Search query (supports Chinese and English).
+        top_k:    Max results to return (default 5).
+        mode:     'hybrid' (TF-IDF + Ollama) or 'tfidf' (score only).
+
+    Returns:
+        JSON with results [{path, title, snippet, score}, ...].
+    """
+    import time, math
+    t0 = time.time()
+
+    idx_path = os.path.join(_ls_get_store_dir(), "tfidf_index.json")
+    manifest = _ls_load_manifest()
+
+    if not os.path.exists(idx_path):
+        build_search_index()
+
+    with open(idx_path) as f:
+        raw = json.load(f)
+
+    doc_freqs = raw["doc_freqs"]
+    doc_vectors = raw["doc_vectors"]
+    doc_data = raw["doc_data"]
+    n_docs = len(doc_data)
+
+    # Use cross-lingual expansion for richer query representation
+    q_terms = _ls_preprocess(query, expand_dict=True)
+    if not q_terms:
+        return json.dumps({"success": False, "error": "No valid query terms after stopword filtering"}, ensure_ascii=False)
+
+    q_vec_tfidf = _ls_tfidf_vector(q_terms, doc_freqs, n_docs)
+
+    # Load Ollama vectors (pre-computed at index time)
+    emb_path = os.path.join(_ls_get_store_dir(), "ollama_vectors.json")
+    emb_vectors = []
+    emb_available = False
+    if os.path.exists(emb_path):
+        with open(emb_path) as f:
+            emb_vectors = json.load(f)
+        emb_available = any(v for v in emb_vectors)
+
+    # Compute Ollama query embedding
+    q_emb = None
+    if emb_available:
+        try:
+            q_emb = _ls_embed([query])[0]
+        except Exception:
+            pass
+
+    scores = []
+    for i, vec in enumerate(doc_vectors):
+        tfidf_score = _ls_cosine(q_vec_tfidf, vec)
+        final_score = tfidf_score
+
+        # Ollama vector component (only if both query and doc have embeddings)
+        if mode == "hybrid" and q_emb is not None and i < len(emb_vectors) and emb_vectors[i]:
+            doc_emb = emb_vectors[i]
+            if doc_emb and len(doc_emb) == len(q_emb):
+                emb_score = _ls_cosine_vec(q_emb, doc_emb)
+                final_score = 0.6 * tfidf_score + 0.4 * emb_score
+
+        # Keyword boost
+        if mode == "hybrid":
+            snippet_lower = doc_data[i]["chunk_text"].lower()
+            for t in q_terms:
+                if len(t) >= 2:
+                    final_score += snippet_lower.count(t) * 0.05
+
+        if final_score > 0:
+            scores.append((final_score, i))
+
+    scores.sort(key=lambda x: -x[0])
+    results = []
+    for score, i in scores[:top_k]:
+        d = doc_data[i]
+        results.append({
+            "path": d["path"],
+            "title": d.get("title", ""),
+            "snippet": d["chunk_text"][:200],
+            "score": round(score, 4),
+        })
+
+    emb_status = "available" if emb_available else "unavailable"
+    return json.dumps({
+        "success": True,
+        "query": query,
+        "mode": mode,
+        "results": results,
+        "total_indexed": manifest.get("n_chunks", 0),
+        "emb_status": emb_status,
+        "elapsed_ms": round((time.time() - t0) * 1000, 1),
     }, ensure_ascii=False)
 
 
@@ -2486,6 +3184,57 @@ QUERY_ARBITRATION_HISTORY_SCHEMA = {
     },
 }
 
+BUILD_SEARCH_INDEX_SCHEMA = {
+    "name": "build_search_index",
+    "description": (
+        "Build / rebuild the TF-IDF search index for /Brain/. "
+        "Call this after adding or updating many notes. "
+        "Results are cached in /.local_search/tfidf_index.json. "
+        "The index is auto-built on first local_search call if missing. "
+        "Use this to force a rebuild after bulk note changes."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "chunk_size": {
+                "type": "integer", "default": 500,
+                "description": "Max words per chunk (default 500). Short notes = 1 chunk. Larger = fewer chunks, faster search but less granular."
+            },
+        },
+    },
+}
+
+LOCAL_SEARCH_SCHEMA = {
+    "name": "local_search",
+    "description": (
+        "Hybrid TF-IDF search over /Brain/ notes. "
+        "Supports Chinese (bigram tokenization) and English. "
+        "Pipeline: tokenize → TF-IDF cosine similarity → keyword boost → rank. "
+        "Vector embedding layer is reserved for future integration. "
+        "Use build_search_index after bulk note changes."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "Search query. Supports Chinese and English."
+            },
+            "top_k": {
+                "type": "integer", "default": 5,
+                "description": "Max results to return (default 5)."
+            },
+            "mode": {
+                "type": "string", "default": "hybrid",
+                "enum": ["hybrid", "tfidf"],
+                "description": "'hybrid' = TF-IDF + keyword boost; 'tfidf' = score only."
+            },
+        },
+        "required": ["query"],
+    },
+}
+
+
 LEARN_RULES_SCHEMA = {
     "name": "learn_rules_from_history",
     "description": (
@@ -2787,4 +3536,30 @@ registry.register(
     check_fn=check_cko_brain_requirements,
     emoji="🧠",
     description="Learn conflict-resolution rules from arbitration history — auto-apply high-confidence rules",
+)
+
+registry.register(
+    name="build_search_index",
+    toolset="cko_brain",
+    schema=BUILD_SEARCH_INDEX_SCHEMA,
+    handler=lambda args, **kw: build_search_index(
+        chunk_size=args.get("chunk_size", 500),
+    ),
+    check_fn=check_cko_brain_requirements,
+    emoji="🔍",
+    description="Build TF-IDF search index for /Brain/ — call after bulk note changes",
+)
+
+registry.register(
+    name="local_search",
+    toolset="cko_brain",
+    schema=LOCAL_SEARCH_SCHEMA,
+    handler=lambda args, **kw: local_search(
+        query=args["query"],
+        top_k=args.get("top_k", 5),
+        mode=args.get("mode", "hybrid"),
+    ),
+    check_fn=check_cko_brain_requirements,
+    emoji="🔎",
+    description="Hybrid TF-IDF search over /Brain/ notes — Chinese + English, CJK bigrams, keyword boost",
 )
