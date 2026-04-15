@@ -771,6 +771,7 @@ def _ls_preprocess(text: str, expand_dict: bool = False) -> list:
 
 
 _LS_STOPWORDS = {
+    # English — standard NLP stopwords + common technical noise
     'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by',
     'from', 'as', 'is', 'was', 'are', 'were', 'been', 'be', 'have', 'has', 'had', 'do', 'does',
     'did', 'will', 'would', 'could', 'should', 'may', 'might', 'must', 'shall', 'can',
@@ -778,9 +779,49 @@ _LS_STOPWORDS = {
     'what', 'which', 'who', 'when', 'where', 'why', 'how', 'not', 'no', 'yes', 'all', 'any',
     'each', 'every', 'some', 'if', 'then', 'else', 'so', 'than', 'too', 'very', 'just', 'only',
     'also', 'now', 'here', 'there', 'into', 'out', 'up', 'down', 'over', 'under', 'again', 'once',
-    'more', 'other', 'same', 'such', '的', '了', '在', '是', '我', '有', '和', '就', '不', '人',
-    '都', '一', '一个', '上', '也', '很', '到', '说', '要', '去', '你', '会', '着', '没有',
-    '看', '好', '自己', '这', '什么', '可以', '可能', '已经', '或者', '如果',
+    'more', 'other', 'same', 'such', 'about', 'after', 'before', 'between', 'through',
+    'during', 'above', 'below', 'while', 'because', 'against', 'per', 'via', 'that\'s',
+    'its', 'their', 'my', 'your', 'our', 'his', 'her', 'their', 'whose', 'own',
+    'first', 'last', 'new', 'old', 'high', 'low', 'well', 'even', 'still', 'back',
+    'get', 'got', 'gets', 'getting', 'make', 'made', 'makes', 'making',
+    'see', 'saw', 'seen', 'seeing', 'know', 'knew', 'known', 'knowing',
+    'use', 'used', 'uses', 'using', 'file', 'files', 'path', 'paths', 'dir', 'directory',
+    'run', 'runs', 'running', 'run', 'start', 'starts', 'starting', 'started',
+    'stop', 'stops', 'stopping', 'stopped', 'set', 'sets', 'setting', 'setup',
+    'add', 'adds', 'adding', 'added', 'remove', 'removes', 'removing', 'removed',
+    'create', 'creates', 'creating', 'created', 'delete', 'deletes', 'deleting', 'deleted',
+    'edit', 'edits', 'editing', 'edited', 'read', 'reads', 'reading', 'write', 'writes',
+    'writing', 'find', 'finds', 'finding', 'found', 'call', 'calls', 'calling', 'called',
+    'send', 'sends', 'sending', 'sent', 'receive', 'receives', 'receiving', 'received',
+    'give', 'gives', 'giving', 'given', 'take', 'takes', 'taking', 'took', 'taken',
+    'show', 'shows', 'showing', 'shown', 'look', 'looks', 'looking', 'looked',
+    'work', 'works', 'working', 'worked', 'need', 'needs', 'need', 'needed', 'needing',
+    'want', 'wants', 'wanting', 'wanted', 'like', 'likes', 'liking', 'liked',
+    'think', 'thinks', 'thinking', 'thought', 'say', 'says', 'saying', 'said',
+    'go', 'goes', 'going', 'went', 'gone', 'come', 'comes', 'coming', 'came',
+    'put', 'puts', 'putting', 'keep', 'keeps', 'keeping', 'kept',
+    'let', 'lets', 'letting', 'begin', 'begins', 'beginning', 'began', 'begun',
+    'seem', 'seems', 'seeming', 'seemed', 'leave', 'leaves', 'leaving', 'left',
+    'right', 'left', 'big', 'small', 'large', 'long', 'short', 'many', 'much',
+    'way', 'ways', 'thing', 'things', 'time', 'times', 'year', 'years', 'day', 'days',
+    'note', 'notes', 'type', 'types', 'key', 'keys', 'value', 'values', 'name', 'names',
+    'number', 'numbers', 'line', 'lines', 'text', 'code', 'data', 'type', 'result', 'results',
+    'error', 'errors', 'warning', 'warnings', 'info', 'message', 'messages',
+    'default', 'defaults', 'normal', 'normally', 'usually', 'often', 'always', 'never',
+    'ever', 'ever', 'today', 'yesterday', 'tomorrow', 'now', 'then', 'later', 'earlier',
+    'true', 'false', 'none', 'null', 'empty', 'full', 'both', 'either', 'neither',
+    'www', 'http', 'https', 'url', 'uri', 'link', 'html', 'api', 'sdk', 'cli', 'gui',
+    # Chinese — common stopwords
+    '的', '了', '在', '是', '我', '有', '和', '就', '不', '人', '都', '一', '一个', '上', '也',
+    '很', '到', '说', '要', '去', '你', '会', '着', '没有', '看', '好', '自己', '这', '什么',
+    '可以', '可能', '已经', '或者', '如果', '但是', '因为', '所以', '虽然', '然而', '并且',
+    '而且', '只是', '只有', '就是', '不是', '还是', '如何', '怎样', '怎么', '为什么',
+    '这里', '那里', '这个', '那个', '这些', '那些', '自己', '别人', '大家', '我们',
+    '你', '您', '他', '她', '它', '他们', '她们', '它们', '我的', '你的', '他的', '她的',
+    '它的', '我们的', '你们的', '他们的', '一种', '一些', '一样', '一点', '一下',
+    '没有', '不是', '不能', '不会', '不要', '不用', '不行', '不对', '不好', '不会',
+    '能', '能够', '会', '可以', '必须', '应该', '需要', '想要', '愿意', '肯',
+    '做', '作为', '成为', '形成', '构成', '等于', '相当于', '属于', '关于',
 }
 
 # ── Cross-lingual translation dict (CN ↔ EN technical terms) ──
@@ -1128,19 +1169,73 @@ _LS_CROSS_LINGUAL = {
 
 
 def _ls_chunk_text(text: str, size: int = 500) -> list:
+    """
+    Paragraph-aware text chunking — respects semantic boundaries.
+
+    Strategy:
+      1. Strip frontmatter
+      2. Split on double-newline paragraphs (most semantic boundary)
+      3. Merge short paragraphs together up to size limit
+      4. Only split single paragraphs that exceed size (on line/word boundary)
+      5. Preserve markdown structure (lists, tables stay intact within chunks)
+
+    This prevents mid-sentence cuts that pure word-count chunking causes.
+    """
     import re
-    text = re.sub(r'^---[\s\S]*?---', '', text)
-    lines = text.split('\n')
-    chunks, current, wc = [], [], 0
-    for line in lines:
-        w = len(line.split())
-        if wc + w > size and current:
-            chunks.append('\n'.join(current))
-            current, wc = [], 0
-        current.append(line)
-        wc += w
+    # Step 1: strip frontmatter
+    text = re.sub(r'^---[\s\S]*?---', '', text).strip()
+    if not text:
+        return []
+
+    # Step 2: split into paragraphs (double newline = paragraph boundary)
+    raw_paras = re.split(r'\n\s*\n', text)
+    paragraphs = [p.strip() for p in raw_paras if p.strip()]
+
+    if not paragraphs:
+        # Fallback: single line split
+        paragraphs = [p.strip() for p in text.split('\n') if p.strip()]
+    if not paragraphs:
+        return []
+
+    chunks, current, current_wc = [], [], 0
+
+    for para in paragraphs:
+        para_wc = len(para.split())
+
+        # If single paragraph exceeds size, split it further
+        if para_wc > size * 1.5:
+            # Flush current
+            if current:
+                chunks.append('\n\n'.join(current))
+                current, current_wc = [], 0
+
+            # Split the oversized paragraph on sentence/line boundaries
+            sub_lines = para.split('\n')
+            sub_cur, sub_wc = [], 0
+            for line in sub_lines:
+                line_wc = len(line.split())
+                if sub_wc + line_wc > size and sub_cur:
+                    chunks.append('\n'.join(sub_cur))
+                    sub_cur, sub_wc = [], 0
+                sub_cur.append(line)
+                sub_wc += line_wc
+            if sub_cur:
+                chunks.append('\n'.join(sub_cur))
+            continue
+
+        # Normal paragraph: add if fits, else flush and start new
+        if current_wc + para_wc <= size:
+            current.append(para)
+            current_wc += para_wc
+        else:
+            if current:
+                chunks.append('\n\n'.join(current))
+            # Start new chunk with this paragraph (even if it fits in a new chunk)
+            current, current_wc = [para], para_wc
+
     if current:
-        chunks.append('\n'.join(current))
+        chunks.append('\n\n'.join(current))
+
     return [c.strip() for c in chunks if c.strip()]
 
 
@@ -1225,17 +1320,33 @@ def _ls_embed(texts: list, model: str = "nomic-embed-text") -> list:
     return embeddings
 
 
-def build_search_index(notes_dir: Optional[str] = None, chunk_size: int = 500) -> str:
+def _ls_chunk_hash(text: str) -> str:
+    """Content-based hash of a chunk for incremental update detection."""
+    import hashlib, re
+    # Normalize: strip frontmatter, collapse whitespace
+    clean = re.sub(r'^---[\s\S]*?---', '', text)
+    clean = re.sub(r'\s+', ' ', clean).strip()
+    return hashlib.sha256(clean.encode()).hexdigest()[:16]
+
+
+def build_search_index(notes_dir: Optional[str] = None, chunk_size: int = 500,
+                        force: bool = False) -> str:
     """
     Scan notes in /Brain/, chunk each note, and build a TF-IDF index for local_search.
-    Call this after adding or modifying many notes. Results are cached in /.local_search/.
+    Results are cached in /.local_search/ — only re-embeds changed chunks.
+
+    Incremental logic:
+      1. Load existing manifest and ollama_vectors.json
+      2. For each new/updated note, detect which chunks changed (by content hash)
+      3. Only call Ollama for changed chunks (preserving all unchanged embeddings)
 
     Args:
         notes_dir:   Directory to index. Defaults to BRAIN_ROOT.
-        chunk_size: Max words per chunk (default 500). Short notes = 1 chunk.
+        chunk_size:  Max words per chunk (default 500). Short notes = 1 chunk.
+        force:       True to bypass incremental cache and rebuild everything.
 
     Returns:
-        JSON summary with notes_indexed, chunks, elapsed_s.
+        JSON summary with notes_indexed, chunks, ollama_calls (only changed), elapsed_s.
     """
     import time, re
     t0 = time.time()
@@ -1250,8 +1361,26 @@ def build_search_index(notes_dir: Optional[str] = None, chunk_size: int = 500) -
             if fn.endswith(".md"):
                 md_files.append(os.path.join(root, fn))
 
+    # Load existing Ollama vectors for incremental update
+    emb_path = os.path.join(_ls_get_store_dir(), "ollama_vectors.json")
+    old_emb_vectors = []
+    old_emb_map = {}  # chunk_id -> (index, vector)
+    if not force and os.path.exists(emb_path):
+        with open(emb_path) as f:
+            old_emb_vectors = json.load(f)
+
+    # Load existing manifest for incremental detection
+    old_manifest = {} if force else _ls_load_manifest()
+    old_chunk_hash = {}  # chunk_id -> content_hash
+    for note in old_manifest.get("notes", []):
+        if "hash" in note:
+            old_chunk_hash[note["path"]] = note["hash"]
+
     doc_freqs = {}
     doc_data = []
+    new_chunk_hashes = {}   # chunk_id -> hash
+    ollama_calls = 0        # count of new/changed chunks needing embedding
+
     for fp in md_files:
         rel = os.path.relpath(fp, brain_root)
         with open(fp) as f:
@@ -1263,24 +1392,100 @@ def build_search_index(notes_dir: Optional[str] = None, chunk_size: int = 500) -
         chunks = _ls_chunk_text(content, chunk_size)
         for i, chunk in enumerate(chunks):
             chunk_id = f"{rel}.{i}" if len(chunks) > 1 else rel
+            chunk_hash = _ls_chunk_hash(chunk)
+            new_chunk_hashes[chunk_id] = chunk_hash
+
+            # Determine if this chunk needs re-embedding
+            old_hash = old_chunk_hash.get(chunk_id, None)
+            chunk_changed = (old_hash != chunk_hash)
+
+            if chunk_changed and not force:
+                # Check if this chunk_id existed before
+                if chunk_id in old_emb_map and not force:
+                    # Update existing slot
+                    old_emb_vectors[old_emb_map[chunk_id][0]] = []
+                # Will be re-embedded below
+
             terms = _ls_preprocess(chunk)
             for t in set(terms):
                 doc_freqs[t] = doc_freqs.get(t, 0) + 1
-            doc_data.append({"path": chunk_id, "title": title or rel, "chunk_text": chunk, "terms": terms})
+            doc_data.append({
+                "path": chunk_id,
+                "title": title or rel,
+                "chunk_text": chunk,
+                "terms": terms,
+                "hash": chunk_hash,
+            })
+            if chunk_changed:
+                ollama_calls += 1
 
     n_docs = len(doc_data)
+
+    # Rebuild old_emb_map for new doc_data order
+    old_emb_vectors = []  # Will repopulate below with new order
+    if not force and os.path.exists(emb_path):
+        try:
+            with open(emb_path) as f:
+                old_emb_vectors = json.load(f)
+        except Exception:
+            old_emb_vectors = []
+
+    # Build old index lookup: chunk_id -> index in old file
+    old_idx_by_chunk = {}
+    old_vecs_by_chunk = {}
+    if not force and os.path.exists(emb_path):
+        old_raw = None
+        idx_path = os.path.join(_ls_get_store_dir(), "tfidf_index.json")
+        if os.path.exists(idx_path):
+            with open(idx_path) as f:
+                old_raw = json.load(f)
+        if old_raw and "doc_data" in old_raw:
+            for idx, d in enumerate(old_raw["doc_data"]):
+                old_idx_by_chunk[d["path"]] = idx
+
+    # Compute TF-IDF vectors
     doc_vectors = [_ls_tfidf_vector(d["terms"], doc_freqs, n_docs) for d in doc_data]
 
-    # Ollama embedding vectors
-    emb_path = os.path.join(_ls_get_store_dir(), "ollama_vectors.json")
+    # Incremental Ollama embedding — only changed chunks
+    emb_vectors = []
+    ollama_actually_called = 0
     try:
         chunk_texts = [d["chunk_text"] for d in doc_data]
-        vecs = _ls_embed(chunk_texts)
-        # Save as list of lists (raw float vectors)
+        # Check which chunks changed vs old
+        old_raw = None
+        idx_path = os.path.join(_ls_get_store_dir(), "tfidf_index.json")
+        if not force and os.path.exists(idx_path):
+            with open(idx_path) as f:
+                old_raw = json.load(f)
+
+        old_hashes = {}
+        old_vecs = []
+        if old_raw:
+            old_emb_path = os.path.join(_ls_get_store_dir(), "ollama_vectors.json")
+            if os.path.exists(old_emb_path):
+                with open(old_emb_path) as f:
+                    old_vecs = json.load(f)
+            for idx, d in enumerate(old_raw["doc_data"]):
+                old_hashes[d["path"]] = d.get("hash", "")
+
+        vecs = []
+        for i, d in enumerate(doc_data):
+            chunk_id = d["path"]
+            old_hash = old_hashes.get(chunk_id, None)
+            if old_hash == d["hash"] and i < len(old_vecs) and old_vecs[i]:
+                # Unchanged — reuse old vector
+                vecs.append(old_vecs[i])
+            else:
+                # Changed — call Ollama
+                result = _ls_embed([d["chunk_text"]])
+                vecs.append(result[0] if result else [])
+                ollama_actually_called += 1
+
         with open(emb_path, "w") as f:
             json.dump(vecs, f)
         n_embedded = sum(1 for v in vecs if v)
-        print(f"[local_search] Ollama embedded {n_embedded}/{len(vecs)} chunks")
+        print(f"[local_search] Ollama embedded {n_embedded}/{len(vecs)} chunks "
+              f"({ollama_actually_called} new/changed)")
     except Exception as ex:
         print(f"[local_search] Ollama embedding skipped: {ex}")
         with open(emb_path, "w") as f:
@@ -1290,13 +1495,15 @@ def build_search_index(notes_dir: Optional[str] = None, chunk_size: int = 500) -
     idx_path = os.path.join(_ls_get_store_dir(), "tfidf_index.json")
     with open(idx_path, "w") as f:
         json.dump({"doc_freqs": doc_freqs, "doc_vectors": doc_vectors,
-                    "doc_data": [{"path": d["path"], "title": d["title"], "chunk_text": d["chunk_text"]}
-                                 for d in doc_data]}, f, ensure_ascii=False)
+                   "doc_data": [{"path": d["path"], "title": d["title"],
+                                 "chunk_text": d["chunk_text"], "hash": d["hash"]}
+                                for d in doc_data]}, f, ensure_ascii=False)
 
     # Save manifest
     manifest = _ls_load_manifest()
     manifest["index_hash"] = _ls_brain_hash()
-    manifest["notes"] = [{"path": d["path"], "title": d["title"]} for d in doc_data]
+    manifest["notes"] = [{"path": d["path"], "title": d["title"], "hash": d["hash"]}
+                         for d in doc_data]
     manifest["n_chunks"] = len(doc_data)
     manifest["n_notes"] = len(md_files)
     manifest["built_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
@@ -1306,20 +1513,55 @@ def build_search_index(notes_dir: Optional[str] = None, chunk_size: int = 500) -
         "success": True,
         "notes_indexed": len(md_files),
         "chunks": len(doc_data),
+        "ollama_calls": ollama_actually_called,
+        "incremental": ollama_actually_called < len(doc_data),
         "elapsed_s": round(time.time() - t0, 2),
     }, ensure_ascii=False)
 
 
+def _ls_rrf_fuse(rankings: list, k: int = 60) -> dict:
+    """
+    Reciprocal Rank Fusion — merge multiple ranked lists into one.
+    Each ranking is a list of (doc_id: int, score: float), sorted descending by score.
+    Returns dict of doc_id -> rrf_score.
+    """
+    rrf_scores = {}
+    for ranking in rankings:
+        for rank, (doc_id, score) in enumerate(ranking):
+            rrf_scores[doc_id] = rrf_scores.get(doc_id, 0.0) + 1.0 / (k + rank + 1)
+    return rrf_scores
+
+
+def _ls_detect_query_type(query: str) -> str:
+    """
+    Detect query type for adaptive retrieval weighting.
+
+    Returns:
+        'technical' — Chinese characters or domain terminology dense (>30% CJK chars)
+        'conceptual' — natural language query, mostly English
+    """
+    import re
+    cjk_chars = len(re.findall(r'[\u4e00-\u9fff]', query))
+    total_chars = len(query)
+    cjk_ratio = cjk_chars / total_chars if total_chars > 0 else 0.0
+    return 'technical' if cjk_ratio > 0.3 else 'conceptual'
+
+
 def local_search(query: str, top_k: int = 5, mode: str = "hybrid") -> str:
     """
-    Hybrid search over /Brain/ notes — TF-IDF + Ollama vector fusion.
+    Hybrid search over /Brain/ notes — TF-IDF + Ollama vector fusion via RRF.
 
     Pipeline (hybrid mode):
       1. CJK-aware tokenization with cross-lingual expansion
-      2. TF-IDF cosine similarity  (weight: 0.6)
-      3. Ollama nomic-embed-text cosine similarity (weight: 0.4)
+      2. TF-IDF cosine similarity (adaptive weight by query type)
+      3. Ollama nomic-embed-text cosine similarity (adaptive weight)
       4. Keyword boost: exact term matches add +0.05/term
-      5. Final score = 0.6*tfidf_score + 0.4*emb_score + keyword_boost
+      5. RRF fusion of TF-IDF and Ollama rankings (k=60)
+      6. Top-k final results
+
+    Adaptive weighting by query type:
+      technical  (CJK > 30%%):  TF-IDF=0.7, Ollama=0.3  — exact terms matter most
+      conceptual (英文/EN):      TF-IDF=0.4, Ollama=0.6  — semantic understanding
 
     Vector layer requires Ollama running with 'nomic-embed-text' pulled.
     Falls back to TF-IDF only if Ollama is unavailable.
@@ -1327,12 +1569,12 @@ def local_search(query: str, top_k: int = 5, mode: str = "hybrid") -> str:
     Args:
         query:    Search query (supports Chinese and English).
         top_k:    Max results to return (default 5).
-        mode:     'hybrid' (TF-IDF + Ollama) or 'tfidf' (score only).
+        mode:     'hybrid' (TF-IDF + Ollama RRF) or 'tfidf' (score only).
 
     Returns:
         JSON with results [{path, title, snippet, score}, ...].
     """
-    import time, math
+    import time, re
     t0 = time.time()
 
     idx_path = os.path.join(_ls_get_store_dir(), "tfidf_index.json")
@@ -1349,10 +1591,15 @@ def local_search(query: str, top_k: int = 5, mode: str = "hybrid") -> str:
     doc_data = raw["doc_data"]
     n_docs = len(doc_data)
 
-    # Use cross-lingual expansion for richer query representation
+    # Preprocess query with cross-lingual expansion
     q_terms = _ls_preprocess(query, expand_dict=True)
     if not q_terms:
         return json.dumps({"success": False, "error": "No valid query terms after stopword filtering"}, ensure_ascii=False)
+
+    # Adaptive query-type weighting
+    query_type = _ls_detect_query_type(query)
+    w_tfidf = 0.7 if query_type == 'technical' else 0.4
+    w_ollama = 1.0 - w_tfidf
 
     q_vec_tfidf = _ls_tfidf_vector(q_terms, doc_freqs, n_docs)
 
@@ -1365,7 +1612,6 @@ def local_search(query: str, top_k: int = 5, mode: str = "hybrid") -> str:
             emb_vectors = json.load(f)
         emb_available = any(v for v in emb_vectors)
 
-    # Compute Ollama query embedding
     q_emb = None
     if emb_available:
         try:
@@ -1373,32 +1619,55 @@ def local_search(query: str, top_k: int = 5, mode: str = "hybrid") -> str:
         except Exception:
             pass
 
-    scores = []
+    # Build two separate ranked lists (RRF-ready)
+    tfidf_ranking = []   # [(doc_idx, weighted_score), ...]
+    ollama_ranking = []  # [(doc_idx, weighted_score), ...]
+    kw_boosts = []       # [(doc_idx, boost), ...]
+
     for i, vec in enumerate(doc_vectors):
         tfidf_score = _ls_cosine(q_vec_tfidf, vec)
-        final_score = tfidf_score
-
-        # Ollama vector component (only if both query and doc have embeddings)
-        if mode == "hybrid" and q_emb is not None and i < len(emb_vectors) and emb_vectors[i]:
-            doc_emb = emb_vectors[i]
-            if doc_emb and len(doc_emb) == len(q_emb):
-                emb_score = _ls_cosine_vec(q_emb, doc_emb)
-                final_score = 0.6 * tfidf_score + 0.4 * emb_score
-
-        # Keyword boost
+        kw_boost = 0.0
         if mode == "hybrid":
             snippet_lower = doc_data[i]["chunk_text"].lower()
             for t in q_terms:
                 if len(t) >= 2:
-                    final_score += snippet_lower.count(t) * 0.05
+                    kw_boost += snippet_lower.count(t) * 0.05
 
-        if final_score > 0:
-            scores.append((final_score, i))
+        if mode == "hybrid" and q_emb is not None and i < len(emb_vectors) and emb_vectors[i]:
+            doc_emb = emb_vectors[i]
+            if doc_emb and len(doc_emb) == len(q_emb):
+                emb_score = _ls_cosine_vec(q_emb, doc_emb)
+                ollama_ranking.append((i, w_ollama * emb_score))
+                tfidf_ranking.append((i, w_tfidf * tfidf_score))
+                kw_boosts.append((i, kw_boost))
+            else:
+                # Ollama vector unavailable for this chunk — TF-IDF only
+                tfidf_ranking.append((i, w_tfidf * tfidf_score))
+                ollama_ranking.append((i, 0.0))
+                kw_boosts.append((i, kw_boost))
+        else:
+            tfidf_ranking.append((i, w_tfidf * tfidf_score))
+            ollama_ranking.append((i, 0.0))
+            kw_boosts.append((i, kw_boost))
 
-    scores.sort(key=lambda x: -x[0])
+    # Sort descending by weighted score
+    tfidf_ranking.sort(key=lambda x: -x[1])
+    ollama_ranking.sort(key=lambda x: -x[1])
+
+    # RRF fusion (k=60 — standard constant, equalizes rank differences)
+    rrf_scores = _ls_rrf_fuse([tfidf_ranking, ollama_ranking], k=60)
+
+    # Add keyword boosts
+    for i, boost in kw_boosts:
+        if boost > 0:
+            rrf_scores[i] = rrf_scores.get(i, 0.0) + boost
+
+    # Sort by RRF score descending
+    final_ranking = sorted(rrf_scores.items(), key=lambda x: -x[1])
+
     results = []
-    for score, i in scores[:top_k]:
-        d = doc_data[i]
+    for doc_id, score in final_ranking[:top_k]:
+        d = doc_data[doc_id]
         results.append({
             "path": d["path"],
             "title": d.get("title", ""),
@@ -1411,6 +1680,9 @@ def local_search(query: str, top_k: int = 5, mode: str = "hybrid") -> str:
         "success": True,
         "query": query,
         "mode": mode,
+        "query_type": query_type,
+        "w_tfidf": w_tfidf,
+        "w_ollama": w_ollama,
         "results": results,
         "total_indexed": manifest.get("n_chunks", 0),
         "emb_status": emb_status,
